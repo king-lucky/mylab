@@ -1,0 +1,108 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: filebeat-config
+  labels:
+    k8s-app: filebeat
+data:
+  filebeat.yml: |-
+    filebeat.inputs:
+    - type: log
+      enabled: true
+      paths:
+        - /var/log/nginx/access.log
+    - type: log
+      enabled: true
+      paths:
+        - /var/log/nginx/error.log
+    output.elasticsearch:
+      hosts: ["elasticsearch-logging.default.svc.cluster.local:9200"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: filebeat
+  labels:
+    k8s-app: filebeat
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      k8s-app: filebeat
+  template:
+    metadata:
+      labels:
+        k8s-app: filebeat
+    spec:
+      initContainers:
+      - image: nginx:1.17.9
+        name: install-nginxtest
+        volumeMounts:
+        - name: html-dir
+          mountPath: /var/html/
+        command: ['sh', '-c', 'echo "This a init nginx test server $HOSTNAME" > /var/html/index.html']
+      containers:
+      - name: nginxtest
+        image: nginx:1.17.9
+        name: nginx
+        volumeMounts:
+        - name: html-dir
+          mountPath: /usr/share/nginx/html/
+        - name: nginx-log
+          mountPath: /var/log/nginx
+      - name: filebeat
+        image: docker.elastic.co/beats/filebeat:7.6.2
+        resources:
+          limits:
+            memory: 200Mi
+          requests:
+            cpu: 100m
+            memory: 100Mi
+        volumeMounts:
+        - name: filebeat-config
+          mountPath: /usr/share/filebeat/filebeat.yml
+          readOnly: true
+          subPath: filebeat.yml
+        - name: nginx-log
+          mountPath: /var/log/nginx
+      volumes:
+      - name: filebeat-config
+        configMap:
+          defaultMode: 0644
+          name: filebeat-config
+      - name: html-dir
+        emptyDir: {}
+      - name: nginx-log
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    k8s-app: filebeat
+  name: filebeat
+spec:
+  ports:
+  - name: 80-80
+    port: 80
+    protocol: TCP
+    targetPort: 80
+  selector:
+    k8s-app: filebeat
+---
+apiVersion: networking.k8s.io/v1beta1
+kind: Ingress
+metadata:
+  name: filebeat-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  rules:
+  - host: test.king.com
+    http:
+      paths:
+      - path:
+        backend:
+          serviceName: filebeat
+          servicePort: 80
